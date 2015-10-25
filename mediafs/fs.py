@@ -78,6 +78,30 @@ class FSObject(object):
         self._abspath = None
 
 
+    def get(self, key, default=None):
+        """
+        Helper method for getting values from the metadata dict. Primarily
+        useful for shortening Directory.query() lambda functions.
+
+        Example:
+            `directory.query(lambda f: 'author' in f.metadata and f.metadata['author'] == "The Clash")`
+            
+            can be shortened to:
+
+            `directory.query(lambda f: f.get('author') == "The Clash")`
+
+        The `default` argument is the value that will be returned if `key`
+        is not a valid key in the metadata dict. This is useful if you
+        are expecting a particular type and want to do some operation on
+        that type. For example:
+            `directory.query(lambda f: f.get('year', default=0) > 1990))`
+        """
+        if key in self.metadata:
+            return self.metadata[key]
+        else:
+            return default
+
+
     @property
     def size(self):
         """
