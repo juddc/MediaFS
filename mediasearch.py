@@ -48,7 +48,7 @@ def getargs():
     parser.add_argument("--exclude-files", "-x", action="store_true", dest="nofiles",
         help="Exclude files from the search (directories only)")
 
-    parser.add_argument("--print", "-p", type=str, nargs=1, dest="printExec", default="print(f.abspath)",
+    parser.add_argument("--exec", "-e", type=str, nargs=1, dest="resultExec", default="print(f.abspath)",
         help="A line of Python code that is run for each search result. "
         "Defaults to \"print(f.abspath)\" if not specified")
 
@@ -70,9 +70,9 @@ def main():
     recursive = not args.nonrecursive
     dirs = not args.nodirs
     files = not args.nofiles
-    printExec = args.printExec
-    if isinstance(printExec, list):
-        printExec = printExec[0]
+    resultExec = args.resultExec
+    if isinstance(resultExec, list):
+        resultExec = resultExec[0]
 
     if not dirs and not files:
         print("Excluding both files and directories will lead to zero results")
@@ -89,15 +89,15 @@ def main():
                 sys.exit(2)
 
             for f in fs.query(queryFunc, recursive=recursive, dirs=dirs, files=files):
-                exec(printExec)
+                exec(resultExec)
 
     elif args.filter:
         for f in fs.filter(args.filter[0], recursive=recursive, dirs=dirs, files=files):
-            exec(printExec)
+            exec(resultExec)
 
     elif args.search:
         for f in fs.search(args.search[0], recursive=recursive, dirs=dirs, files=files):
-            exec(printExec)
+            exec(resultExec)
 
     if args.write:
         fs.save()
