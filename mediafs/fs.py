@@ -63,12 +63,17 @@ class FSObject(object):
     """
     Base class for all filesystem objects
     """
+    # is this object a directory?
     isdir = False
 
+    # what attributes should we exclude when pickling? Will be set to None when unpickling.
+    _pickleExclude = ("_metadata", "_root")
+
+
     def __init__(self, path, parent=None):
-        self.path = path
         self.name = os.path.basename(path)
         self.parent = parent
+        self._path = path
 
         # deferred values:
         self._metadata = None
@@ -78,23 +83,65 @@ class FSObject(object):
         self._abspath = None
 
 
+    def rename(self, newName, syscall=True):
+        """
+        Renames the file or directory. Raises a FileExistsError exception if the
+        new name already exists.
+
+        If the ``syscall`` argument is True, then ``os.rename()`` will be called
+        on the underlying file or directory. Setting this to False is primarily
+        useful for keeping things in sync if you know a rename occured and want
+        to avoid the overhead of a refresh() call.
+        """
+        oldName = self.name
+        oldAbsPath = self.abspath
+        newPath = self.path[:-len(oldName)] + newName
+
+        # if we have a parent directory, check that for the new filename:
+        if self.parent is not None:
+            if newName in self.parent:
+                raise FileExistsError(newName)
+        # if we don't have a parent, resort to an extra syscall:
+        else:
+            if os.path.exists(os.path.abspath(newPath)):
+                raise FileExistsError(newName)
+
+        # change the path and name values themselves
+        self._path = newPath
+        self.name = newName
+        # clear cached values that probably contain the name
+        self._relpath = None
+        self._abspath = None
+
+        # do the actual file rename if requested
+        if syscall:
+            os.rename(oldAbsPath, self.abspath)
+
+        # inform the parent directory object that a rename occured so it can
+        # update accordingly
+        if self.parent is not None and self.parent.isdir:
+            self.parent._itemRenamed(self, oldName, newName)
+
+
     def get(self, key, default=None):
         """
         Helper method for getting values from the metadata dict. Primarily
-        useful for shortening Directory.query() lambda functions.
+        useful for shortening ``Directory.query()`` lambda functions.
 
-        Example:
-            `directory.query(lambda f: 'author' in f.metadata and f.metadata['author'] == "The Clash")`
+        *Example*:
+
+            ``directory.query(lambda f: 'author' in f.metadata and f.metadata['author'] == "The Clash")``
             
             can be shortened to:
 
-            `directory.query(lambda f: f.get('author') == "The Clash")`
+            ``directory.query(lambda f: f.get('author') == "The Clash")``
 
         The `default` argument is the value that will be returned if `key`
         is not a valid key in the metadata dict. This is useful if you
         are expecting a particular type and want to do some operation on
         that type. For example:
-            `directory.query(lambda f: f.get('year', default=0) > 1990))`
+
+            ``directory.query(lambda f: f.get('year', default=0) > 1990))``
         """
         if key in self.metadata:
             return self.metadata[key]
@@ -106,7 +153,7 @@ class FSObject(object):
     def size(self):
         """
         The size of the file or directory contents in bytes.
-        This value is cached after the first call.
+        Lazily evaluated and cached.
         """
         if self._size is None:
             self._size = os.path.getsize(self.path)
@@ -114,10 +161,38 @@ class FSObject(object):
 
 
     @property
+    def path(self):
+        """
+        The path to the file or directory.
+
+        FSObject._path is set in the constructor, but if it is manually set to
+        None, then this can reassemble it from the directory tree. Mostly useful
+        for moving and renaming files.
+        """
+        if self._path is None:
+            parts = [self.name]
+            # go up the parent chain and figure out the path in reverse
+            obj = self
+            while obj is not None:
+                if obj.parent is None:
+                    break
+                else:
+                    parts.append(obj.parent.name)
+                    obj = obj.parent
+            # add on the location of the root directory itself
+            parts.append(os.path.dirname(self.root.abspath))
+            # reverse the array
+            parts = parts[::-1]
+            # reassemble the path
+            self._path = os.path.join(*parts)
+        return self._path
+
+
+    @property
     def abspath(self):
         """
-        The absolute path to the file or directory
-        This value is cached after the first call.
+        The absolute path to the file or directory. Uses ``os.path.abspath()``.
+        Lazily evaluated and cached.
         """
         if self._abspath is None:
             self._abspath = os.path.abspath(self.path)
@@ -127,7 +202,7 @@ class FSObject(object):
     @property
     def metadata(self):
         """
-        The metadata dict for the file or directory
+        The metadata dict for this file or directory
         """
         if self._metadata is None:
             self._metadata = self.root._getMetadataForObject(self.hash())
@@ -137,7 +212,7 @@ class FSObject(object):
     @property
     def root(self):
         """
-        The root directory object
+        A reference to the root directory object
         """
         if self._root is None:
             # go up the parent chain and get the root directory, stopping when parent == None
@@ -155,7 +230,6 @@ class FSObject(object):
     def relpath(self):
         """
         The file or directory path relative to the root directory.
-        This value is cached after the first call.
         """
         if self._relpath is None:
             self._relpath = os.path.relpath(self.path, os.path.commonprefix([self.root.path, self.path]))
@@ -164,32 +238,31 @@ class FSObject(object):
 
     def exists(self):
         """
-        Does the file exist? This value is not cached.
+        Does the file exist?
+        Calls ``os.path.exists()`` on the file or directory and returns the result.
         """
         return os.path.exists(self.path)
 
 
     def stat(self):
         """
-        Calls `os.stat()` on the file and returns the result.
+        Calls ``os.stat()`` on the file or directory and returns the result.
         """
         return os.stat(self.path)
 
 
-    @property
     def atime(self):
         """
-        Returns the last access time for the file or directory as a datetime object.
-        This value is not cached.
+        Last access time as reported by the underlying filesystem.
+        Calls ``os.path.getatime()`` on the file or directory and returns the result as a datetime object.
         """
         return datetime.fromtimestamp(os.path.getatime(self.path))
 
 
-    @property
     def mtime(self):
         """
-        Returns the last modified time for the file or directory as a datetime object.
-        This value is not cached.
+        Last modified time as reported by the underlying filesystem.
+        Calls ``os.path.getmtime()`` on the file or directory and returns the result as a datetime object.
         """
         return datetime.fromtimestamp(os.path.getmtime(self.path))
 
@@ -207,27 +280,28 @@ class FSObject(object):
 
     def matches(self, other):
         """
-        Returns True if this file or directory is the same as another file or directory.
-        Compares by hash, so `file1.matches(file2) == True` if `file1` and `file2` have
+        Returns ``True`` if this file or directory is the same as another file or directory.
+        Compares by hash, so ``file1.matches(file2) == True`` if ``file1`` and ``file2`` have
         identical contents.
         """
         return self.hash() == other.hash()
 
 
     def __getstate__(self):
-        # When pickling, the metadata is stored in a separate file, so ignore _metadata here.
-        # Additionally, the root directory object is not pickled
-        excludeKeys = ["_metadata", "_root"]
-        return { key:val for (key, val) in self.__dict__.items() if key not in excludeKeys }
+        # When pickling, skip any attribute specified in _pickleExclude.
+        # This is useful because we don't want to pickle things like metadata or the root directory.
+        # (metadata is serialized separately)
+        return { key:val for (key, val) in self.__dict__.items() if key not in self._pickleExclude }
 
 
     def __setstate__(self, state):
-        # restore everything (which won't include the metadata and root object)
+        # restore everything we have in the pickle data
         for key, val in state.items():
             self.__dict__[key] = val
-        # then make sure we have _metadata and _root attributes
-        self._metadata = None
-        self._root = None
+
+        # make sure any attributes excluded from the pickling process still have entries
+        for attr in self._pickleExclude:
+            self.__dict__[attr] = None
 
 
     # All FSObjects should have some kind of implementation for __len__, __iter__,
@@ -276,7 +350,7 @@ class File(FSObject):
     def crc(self, refresh=False):
         """
         Calculate the CRC for this file. The result is cached, so subsequent calls
-        do not result in calculating the CRC multiple times. If `refresh` is True,
+        do not result in calculating the CRC multiple times. If ``refresh`` is True,
         then the result is recalculated.
         """
         if refresh or self._crc is None:
@@ -293,7 +367,7 @@ class File(FSObject):
     def md5(self, refresh=False):
         """
         Calculate the MD5 sum for this file. The result is cached, so subsequent calls
-        do not result in calculating the MD5 sum multiple times. If `refresh` is True,
+        do not result in calculating the MD5 sum multiple times. If ``refresh`` is True,
         then the result is recalculated.
         """
         if refresh or self._md5 is None:
@@ -311,7 +385,7 @@ class File(FSObject):
         """
         Calculate a hash for this file that works well on larger files but is optimized
         for speed. The result is cached, so subsequent calls do not result in calculating
-        the hash multiple times. If `refresh` is True, then the result is recalculated.
+        the hash multiple times. If ``refresh`` is True, then the result is recalculated.
         """
         if refresh or self._fasthash is None:
             # only get the size once to avoid excess syscalls
@@ -391,11 +465,11 @@ class Directory(FSObject):
 
     def refresh(self, *files, **kwargs):
         """
-        Rescans the filesystem and rebuilds the index for this directory. If any `files` are
-        specified, then `refresh()` will only scan those files. Otherwise it will scan
+        Rescans the filesystem and rebuilds the index for this directory. If any ``files`` are
+        specified, then ``refresh()`` will only scan those files. Otherwise it will scan
         all files.
 
-        If `recursive=True` is passed in, then `refresh()` will also be called on all subdirectories.
+        If ``recursive=True`` is passed in, then ``refresh()`` will also be called on all subdirectories.
         """
         # extract the recursive argument from kwargs
         recursive = False
@@ -413,6 +487,10 @@ class Directory(FSObject):
             checkRemoved = False
 
         else:
+            # make sure the contents dict exists in case this is the first refresh called
+            if self._contents is None:
+                self._contents = {}
+
             # set up the files array to match the output format of dirlisting()
             f = []
             for item in files:
@@ -422,9 +500,6 @@ class Directory(FSObject):
                 else:
                     f.append( (item, False, False) )
             files = f
-
-            if self._contents is None:
-                self._contents = {}
 
             # if we're scanning specific files, we'll need to check if those files
             # still exist.
@@ -441,13 +516,15 @@ class Directory(FSObject):
             fullPath = os.path.join(self.path, filename)
 
             # should we skip this file?
-            if self.root._ignoreFile(filename, fullPath, isdir):
+            if self.root._ignorePath(filename, fullPath, isdir):
                 continue
 
             # check if we need to remove an item from the directory
             if checkRemoved:
                 # remove the key if the path doesn't exist
                 if not isdir and not isfile and filename in self._contents:
+                    # callback on deletions
+                    self.root._pathDelete(self._contents[filename])
                     del self._contents[filename]
                     continue
 
@@ -476,7 +553,17 @@ class Directory(FSObject):
 
     def filter(self, pattern, recursive=False, dirs=True, files=True, ignoreCase=True):
         """
-        Uses the Python stdlib `fnmatch` library to search the filesystem.
+        Uses the Python stdlib ``fnmatch`` library to search the filesystem.
+
+        If ``ignoreCase`` is True, then ``fnmatch.fnmatch()`` will be used, and filenames
+        will be converted to lowercase before comparisons are made.
+
+        If ``ignoreCase`` is False, then ``fnmatch.fnmatchcase()`` will be used.
+
+        See https://docs.python.org/library/fnmatch.html for more information about the
+        pattern syntax.
+
+        ``recursive``, ``dirs``, and ``files`` arguments are passed to ``Directory.all()``.
         """
         if ignoreCase:
             # fnmatch() uses case-sensitive searching on case-sensitive filesystems,
@@ -496,8 +583,15 @@ class Directory(FSObject):
     def search(self, regex, recursive=False, dirs=True, files=True, flags=re.IGNORECASE):
         """
         Uses a regex as a query string to search the filesystem. Uses case-insensitive
-        matching by default. Passes the value of the `flags` argument directly through
-        to `re.compile()`, so check out the docs on the `regex` module for how that works.
+        matching by default. Passes the value of the ``flags`` argument directly through
+        to ``re.compile()``, so check out the docs on the ``regex`` module for how that works.
+
+        The default value for ``flags`` is ``re.IGNORECASE``.
+
+        ``recursive``, ``dirs``, and ``files`` arguments are passed to ``Directory.all()``.
+
+        Example:
+        ``directory.search(r'(.*)\.txt')``
         """
         check = re.compile(regex, flags=flags)
         for item in self.all(recursive=recursive, dirs=dirs, files=files):
@@ -511,50 +605,42 @@ class Directory(FSObject):
         argument, an FSObject, and should return a boolean that determines if the file
         matches.
 
+        ``recursive``, ``dirs``, and ``files`` arguments are passed to ``Directory.all()``.
+
         Examples:
-            # all files that are named "file1.txt" or "file2.txt", recursively
-            directory.query(lambda f: f.name == "file1.txt" or f.name == "file2.txt", recursive=True)
 
-            # all files larger than 1024 bytes
-            directory.query(lambda f: f.size > 1024, dirs=False)
+        | All files that are named "file1.txt" or "file2.txt", recursively:
+        | ``directory.query(lambda f: f.name in ("file1.txt", "file2.txt"), recursive=True)``
 
-            # all files and directories that start with E
-            directory.query(lambda f: f.name.startswith("E"))
+        | All files larger than 1024 bytes:
+        | ``directory.query(lambda f: f.size > 1024, dirs=False)``
 
-            # all files modified within the last 7 days
-            from datetime import datetime, timedelta
-            directory.query(lambda f: f.mtime > (datetime.now() - timedelta(days=7)), files=True, dirs=False)
+        | All files and directories that start with E:
+        | ``directory.query(lambda f: f.name.startswith("E"))``
 
-            # all directories with more than 10 items
-            directory.query(lambda d: len(d) > 10, recursive=True, files=False, dirs=True)
+        | All files modified within the last 7 days:
+        | ``from datetime import datetime, timedelta``
+        | ``directory.query(lambda f: f.mtime > (datetime.now() - timedelta(days=7)), dirs=False)``
 
-            # all directories that contain a file called "asdf.txt"
-            directory.query(lambda d: "asdf.txt" in d, recursive=True, files=False, dirs=True)
+        | All directories with more than 10 items:
+        | ``directory.query(lambda d: len(d) > 10, recursive=True, files=False)``
+
+        | All directories that contain a file called "asdf.txt":
+        | ``directory.query(lambda d: "asdf.txt" in d, recursive=True, files=False)``
         """
         for item in self.all(recursive=recursive, dirs=dirs, files=files):
             if query(item):
                 yield item
 
 
-    def get(self, filename):
-        """
-        Returns a single file if that file is contained anywhere in this directory.
-        Case-sensitive.
-        """
-        for item in self.all(recursive=True, dirs=True, files=True):
-            if item.name == filename:
-                return item
-        raise FileNotFoundError(filename)
-
-
     def all(self, recursive=False, reverse=False, dirs=True, files=True):
         """
         A generator that yields all files and subdirectories contained within this directory.
 
-        * If `recursive` is True, then it will also yield all items contained in those subdirectories.
-        * If `reverse` is True, then it will iterate in reverse order.
-        * The `dirs` argument indicates whether or not directories should be yielded.
-        * The `files` argument indicates whether or not files should be yielded.
+        * If ``recursive`` is True, then it will also yield all items contained in those subdirectories.
+        * If ``reverse`` is True, then it will iterate in reverse order.
+        * The ``dirs`` argument indicates whether or not directories should be yielded.
+        * The ``files`` argument indicates whether or not files should be yielded.
         """
         if dirs == False and files == False:
             raise ValueError("If both dirs and files are both False, no results will ever be generated.")
@@ -578,6 +664,59 @@ class Directory(FSObject):
                     yield subitem
 
 
+    def _push(self, item):
+        """
+        Put a FSObject instance in this directory.
+        Used for keeping directories in sync with filesystem changes.
+        """
+        if item.name in self.contents.keys():
+            raise FileExistsError(item.name)
+        self.contents[item.name] = item
+
+        # reorder directory
+        self._order = self.root._orderDirectory(self.contents)
+
+        # set up file to be in this directory
+        item.parent = self
+        item._path = os.path.join(self.path, item.name)
+        # clear cached data that is out of date now
+        item._relpath = None
+        item._abspath = None
+
+
+    def _pop(self, item):
+        """
+        Remove a FSObject instance from this directory.
+        Used for keeping directories in sync with filesystem changes.
+        """
+        if self._contents is not None:
+            del self._contents[item.name]
+            self._order = self.root._orderDirectory(self._contents)
+        return item
+
+
+    def _itemRenamed(self, item, oldName, newName):
+        """
+        Called by child file or directories when rename is called on them.
+        """
+        # no need to do anything if we haven't refreshed yet
+        if self._contents is not None:
+            # change the key for the item
+            self._contents[newName] = self._contents[oldName]
+            del self._contents[oldName]
+
+            # recalculate ordering
+            self._order = self.root._orderDirectory(self._contents)
+
+        # if this is a directory, we need to update the paths of EVERY file inside
+        if item.isdir:
+            for f in item.all(recursive=True):
+                f._path = None
+                f._abspath = None
+                f._relpath = None
+                newPath = f.path # force the path var to update
+
+
     def __len__(self):
         """
         Return the number of files and directories in this directory
@@ -597,31 +736,45 @@ class Directory(FSObject):
     def __getitem__(self, key):
         """
         Directory objects support a number of different indexing methods, all of which
-        either return a single object, or a list containing multiple objects (as opposed
-        to the searching methods `filter()`, `search()`, `query()`, and `all()`, which
+        either return a single object or a list containing multiple objects, which is
+        useful when you want to assign the results to a variable (as opposed to the
+        searching methods ``filter()``, ``search()``, ``query()``, and ``all()``, which
         are generators).
 
         Directories support the following syntaxes for indexing:
-            * An ellipsis object (Python 3 only), returns a list of all children, recursively.
-                    directory[...]    # same as list(directory.all(recursive=True))
-            
-            * An integer, which is treated as an index and returns one item based on the
-              directory ordering. Because the ordering is precalculated, this is O(1).
-              Returns exactly one item.
-                    directory[2]
 
-            * A slice, which is treated as a range of indices based on the directory ordering.
-                    directory[1:3]
+        * An ellipsis object returns a list of all children, recursively.
 
-            * A string key, which is treated as a filename and uses a dict-based lookup for O(1)
-              lookups. Returns exactly one item.
-                    directory["asdf.txt"]
+            ``directory[...]``
+                (same as ``list(directory.all(recursive=True))``)
+        
+        * An integer, which is treated as an index and returns one item based on the
+          directory ordering. Because the ordering is precalculated, this is O(1).
+          Returns exactly one item.
 
-            * A string which contains either a `*` or a `?`. This string is passed to the
-              Python stdlib library fnmatch to support searches and returns a list of files
-              or directories that match the pattern. See the documentation for the `fnmatch`
-              library for more information.
-                    directory["*.txt"]       # same as list(directory.filter("*.txt"))
+            ``directory[2]``
+
+        * A slice, which is treated as a range of indices based on the directory ordering.
+
+            ``directory[1:3]``
+
+        * An empty slice, which returns a list of items in the directory.
+
+            ``directory[:]``
+                (same as ``list(directory.all(recursive=False))``)
+
+        * A string key, which is treated as a file or directory name and uses a
+          dict-based lookup for O(1) lookups. Returns exactly one item.
+
+            ``directory["asdf.txt"]``
+
+        * A string which contains either a ``*`` or a ``?``. This string is passed to the
+          Python stdlib library ``fnmatch`` to support searches and returns a list of files
+          or directories that match the pattern. See the documentation for the ``fnmatch``
+          library for more information.
+
+            ``directory["*.txt"]``
+                (same as ``list(directory.filter("*.txt"))``)
         """
         # python 3 ellipsis as a shortcut for all files and directories, recursively
         if key == Ellipsis:
@@ -650,7 +803,6 @@ class Directory(FSObject):
             raise KeyError(key)
 
 
-
 class RootDirectory(Directory):
     """
     The filesystem root directory
@@ -666,9 +818,14 @@ class RootDirectory(Directory):
         self._contents, self._order = self._readTreeData()
 
 
+    def rename(self, newName, syscall=True):
+        # renaming the root directory would break things somewhat...
+        raise OSError("You can't rename the root directory.")
+
+
     @property
     def root(self):
-        # Normally the `root` property figures out what the root directory is and returns it.
+        # Normally the ``root`` property figures out what the root directory is and returns it.
         # This object IS the root, so just return self.
         return self
 
@@ -720,7 +877,7 @@ class RootDirectory(Directory):
 
     def _orderDirectory(self, contents):
         """
-        From the `contents` argument, which is a dict with filenames as keys and
+        From the ``contents`` argument, which is a dict with filenames as keys and
         File objects as values, return a list of keys that will represent the ordering
         of that dict.
         """
@@ -729,9 +886,9 @@ class RootDirectory(Directory):
         return order
 
 
-    def _ignoreFile(self, name, fullpath, isdir):
+    def _ignorePath(self, name, fullpath, isdir):
         """
-        Based on a filename and its full path, return True if a file or directory
+        Based on a file or directory name and its full path, return True if a file or directory
         should be excluded from indexing. Otherwise return False.
         """
         return False
@@ -755,6 +912,16 @@ class RootDirectory(Directory):
         """
 
 
+    def _pathDelete(self, item):
+        """
+        Callback whenever a file or directory is about to be deleted. This happens
+        when a refresh is triggered and a file or directory no longer exists.
+
+        Override this in subclasses if you would like some code to run before the
+        file or directory object reference is removed.
+        """
+
+
     def _readMetadata(self):
         """
         Returns metadata for all files in the filesystem.
@@ -769,12 +936,12 @@ class RootDirectory(Directory):
 
     def _writeMetadata(self, metadata):
         """
-        The `metadata` argument is a dict containing metadata for the entire filesystem.
-        The keys represent the output of FSObject.hash(), and the values are dicts containing
+        The ``metadata`` argument is a dict containing metadata for the entire filesystem.
+        The keys represent the output of ``FSObject.hash()``, and the values are dicts containing
         the metadata assocated with that hash.
 
         This method should write that metadata to a file or database so that it can be
-        restored later with _readMetadata.
+        restored later with ``_readMetadata()``.
         """
 
 
@@ -786,7 +953,7 @@ class RootDirectory(Directory):
         to be cached.
 
         Should return a 2-tuple, with the first element being a dict (keys are filenames,
-        values are of type `FSObject`), and the second element being a list containing
+        values are of type ``FSObject``), and the second element being a list containing
         all keys in that dict which represents the ordering of those keys.
         """
         return (None, None)
@@ -807,7 +974,7 @@ class RootDirectory(Directory):
 
     def _getMetadataForObject(self, fshash):
         """
-        Given the hash of a file (which are generated by FSObject.hash()), return a
+        Given the hash of a file (which are generated by ``FSObject.hash()``), return a
         dict representing the metadata for that file.
 
         This method exists so that subclasses can override default behavior.
@@ -856,7 +1023,7 @@ class CachedRootDirectory(RootDirectory):
         RootDirectory.__init__(self, path)
 
 
-    def _ignoreFile(self, name, fullpath, isdir):
+    def _ignorePath(self, name, fullpath, isdir):
         # Ignore the metadata and tree cache data when indexing
         if name == self._mdFile or name == self._treeFile:
             return True
@@ -896,5 +1063,45 @@ class CachedRootDirectory(RootDirectory):
         if self._treeFile is not None:
             with open(self._treeFile, 'wb') as fp:
                 pickle.dump((tree, order, _VERSION), fp)
+
+
+
+def mkRootDirectoryBaseClass(FileClass=File, DirectoryClass=Directory, RootDirectoryClass=RootDirectory):
+    """
+    Helper factory function that can generate a RootDirectory class
+    with a different base class. Useful if you have a custom Directory
+    class with features you also want to work with the root directory.
+
+    ``FileClass``: a class that all file objects will derive from.
+    ``DirectoryClass``: a class that all directories, including the root
+        directory, will be derived from.
+    ``RootDirectoryClass``: a class to copy existing methods from. This
+        allows your custom base class to "inherit" methods from existing
+        root directories, such as CachedRootDirectory.
+    """
+    # generate the new class
+    class RootDir(DirectoryClass):
+        # may as well auto-fill the _getFileClass and _getDirectoryClass methods
+        def _getFileClass(self):
+            return FileClass
+        def _getDirectoryClass(self):
+            return DirectoryClass
+
+    # apply all of the root directory attributes to this new root directory class
+    for name, obj in RootDirectory.__dict__.items():
+        if name not in ("_getFileClass", "_getDirectoryClass"):
+            setattr(RootDir, name, obj)
+
+    # if the specified root directory class isn't the default, also apply any extra
+    # stuff from the specified one as well.
+    if RootDirectoryClass != RootDirectory:
+        if not RootDirectoryClass.__base__ == RootDirectory:
+            raise Exception("The RootDirectoryClass argument must inherit directly from RootDirectory.")
+
+        for name, obj in RootDirectoryClass.__dict__.items():
+            if name not in ("_getFileClass", "_getDirectoryClass"):
+                setattr(RootDir, name, obj)
+
+    return RootDir
 
 

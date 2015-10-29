@@ -1,1 +1,8 @@
-from .fs import File, Directory, RootDirectory, CachedRootDirectory
+from .fs import (
+    FSObject,
+    File,
+    Directory,
+    RootDirectory,
+    CachedRootDirectory,
+    mkRootDirectoryBaseClass,
+)
