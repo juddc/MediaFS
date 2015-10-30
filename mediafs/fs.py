@@ -5,7 +5,6 @@ import os
 import re
 import sys
 import json
-import pickle
 import fnmatch
 import hashlib
 import binascii
@@ -38,26 +37,6 @@ else:
             return
 
 
-def _md5(path):
-    """
-    Returns the MD5 sum of a file. Will raise MemoryError on large files.
-    Just intended for use as a helper for calculating a version number for
-    the module so we can avoid unpickling data from older versions.
-    """
-    h = hashlib.md5()
-    with open(path, 'r') as fp:
-        # python2 yells at you for calling encode() here
-        if sys.version_info.major <= 2:
-            h.update(fp.read())
-        else:
-            h.update(fp.read().encode())
-    return h.hexdigest()
-
-# precalculate the version number at import time so we don't have to calculate
-# it every time a file tree cache is loaded
-_VERSION = _md5(os.path.abspath(__file__))
-
-
 
 class FSObject(object):
     """
@@ -66,9 +45,8 @@ class FSObject(object):
     # is this object a directory?
     isdir = False
 
-    # what attributes should we exclude when pickling? Will be set to None when unpickling.
-    _pickleExclude = ("_metadata", "_root")
-
+    # what fields should be serialized when FSObject.serialize() is called?
+    serializeFields = ('name', '_path', '_size', '_relpath', '_abspath')
 
     def __init__(self, path, parent=None):
         self.name = os.path.basename(path)
@@ -81,6 +59,45 @@ class FSObject(object):
         self._size = None
         self._relpath = None
         self._abspath = None
+
+
+    def serialize(self):
+        """
+        Returns a dict object containing the attributes of this object.
+        Used for serializing the directory tree to a file.
+        """
+        mro = self.__class__.__mro__
+        if File in mro:
+            clsName = "File"
+        elif Directory in mro:
+            clsName = "Directory"
+        elif FSObject in mro:
+            clsName = "FSObject"
+        else:
+            raise TypeError("Don't know how to serialize a class that isn't derived "
+                "from a FSObject (__mro__ == %s)" % mro)
+
+        data = {'__fsobject': clsName}
+        for attr in self.serializeFields:
+            data[attr] = getattr(self, attr)
+        return data
+
+
+    @classmethod
+    def deserialize(cls, attrs):
+        """
+        Takes a dict object and a parent object, and returns a new instance of
+        this object with all attributes initialized to the values contained in
+        the dict.
+        """
+        inst = cls.__new__(cls)
+        for attr, val in attrs.items():
+            if not attr.startswith("__"):
+                setattr(inst, attr, val)
+        inst.parent = None
+        inst._metadata = None
+        inst._root = None
+        return inst
 
 
     def rename(self, newName, syscall=True):
@@ -287,23 +304,6 @@ class FSObject(object):
         return self.hash() == other.hash()
 
 
-    def __getstate__(self):
-        # When pickling, skip any attribute specified in _pickleExclude.
-        # This is useful because we don't want to pickle things like metadata or the root directory.
-        # (metadata is serialized separately)
-        return { key:val for (key, val) in self.__dict__.items() if key not in self._pickleExclude }
-
-
-    def __setstate__(self, state):
-        # restore everything we have in the pickle data
-        for key, val in state.items():
-            self.__dict__[key] = val
-
-        # make sure any attributes excluded from the pickling process still have entries
-        for attr in self._pickleExclude:
-            self.__dict__[attr] = None
-
-
     # All FSObjects should have some kind of implementation for __len__, __iter__,
     # __contains__, and __getitem__ to elegantly support Directory.query().
     # The default implementations here assumes the object has NO contents at all.
@@ -338,6 +338,9 @@ class File(FSObject):
     Object that represents a file in the filesystem
     """
     isdir = False
+
+    # what fields should be serialized when FSObject.serialize() is called?
+    serializeFields = FSObject.serializeFields + ('_crc', '_md5', '_fasthash')
 
     def __init__(self, path, parent=None):
         FSObject.__init__(self, path, parent)
@@ -430,10 +433,27 @@ class Directory(FSObject):
     """
     isdir = True
 
+    # what fields should be serialized when FSObject.serialize() is called?
+    serializeFields = FSObject.serializeFields + ('_contents',)
+
     def __init__(self, path, parent=None):
         FSObject.__init__(self, path, parent)
         self._contents = None
         self._order = None
+
+
+    @classmethod
+    def deserialize(cls, attrs):
+        """
+        Takes a dict object and a parent object, and returns a new instance of
+        this object with all attributes initialized to the values contained in
+        the dict.
+        """
+        inst = super(Directory, cls).deserialize(attrs)
+        inst._order = None
+        for key in inst._contents.keys():
+            inst._contents[key].parent = inst
+        return inst
 
 
     @property
@@ -459,7 +479,10 @@ class Directory(FSObject):
     @property
     def order(self):
         if self._order is None:
-            self.refresh()
+            if self._contents is None:
+                self.refresh()
+            else:
+                self._order = self.root._orderDirectory(self._contents)
         return self._order
 
 
@@ -817,6 +840,13 @@ class RootDirectory(Directory):
         self._md = self._readMetadata()
         self._contents, self._order = self._readTreeData()
 
+        # make sure all direct child objects have the correct parent set
+        if self._contents is not None:
+            for item in self._contents.values():
+                item.parent = self
+                # may as well set the root attribute too
+                item._root = self
+
 
     def rename(self, newName, syscall=True):
         # renaming the root directory would break things somewhat...
@@ -987,11 +1017,10 @@ class RootDirectory(Directory):
 
 class CachedRootDirectory(RootDirectory):
     """
-    A root directory that uses the pickle module to cache the directory tree,
-    and the json module to serialize the metadata.
+    A root directory that uses the json module to cache the directory tree and metadata.
 
     The constructor adds two optional arguments, `metadataFile` and `treeFile`.
-    They default to `.metadata.json` and `.tree.pickle`, respectively, and
+    They default to `.metadata.json` and `.tree.json`, respectively, and
     can be used to specify the paths to the metadata storage for this filesystem.
 
     If `metadataFile=None` is passed to the constructor, metadata will not be
@@ -1006,7 +1035,7 @@ class CachedRootDirectory(RootDirectory):
     reasonable place.
     """
 
-    def __init__(self, path, metadataFile=".metadata.json", treeFile=".tree.pickle"):
+    def __init__(self, path, metadataFile=".metadata.json", treeFile=".tree.json"):
         # Set the filenames of the metadata and tree files before calling the parent constructor.
         # The parent constructor will call _readMetadata and _readTreeData, so we need these values
         # to be available before that happens.
@@ -1016,7 +1045,7 @@ class CachedRootDirectory(RootDirectory):
             self._mdFile = os.path.join(path, metadataFile)
 
         self._treeFile = treeFile
-        if self._treeFile == ".tree.pickle":
+        if self._treeFile == ".tree.json":
             # if the filename is the default one, put it at the root of the filesystem
             self._treeFile = os.path.join(path, treeFile)
 
@@ -1044,25 +1073,33 @@ class CachedRootDirectory(RootDirectory):
                 json.dump(metadata, fp, indent=4)
 
 
+    def _deserializeHandler(self, data):
+        if '__fsobject' in data:
+            if data['__fsobject'] == 'File':
+                return self._getFileClass().deserialize(data)
+            elif data['__fsobject'] == 'Directory':
+                return self._getDirectoryClass().deserialize(data)
+        return data
+
+
+    def _serializeHandler(self, obj):
+        if isinstance(obj, (self._getFileClass(), self._getDirectoryClass())):
+            return obj.serialize()
+        raise TypeError(str(type(obj)))
+
+
     def _readTreeData(self):
         if self._treeFile is not None and os.path.exists(self._treeFile):
-            with open(self._treeFile, 'rb') as fp:
-                try:
-                    tree, order, version = pickle.load(fp)
-                except:
-                    # don't load this cache, it wasn't parsed correctly
-                    return (None, None)
-                else:
-                    # make sure the version matches
-                    if version == _VERSION:
-                        return (tree, order)
+            with open(self._treeFile, 'r') as fp:
+                data = json.load(fp, object_hook=self._deserializeHandler)
+                return (data['contents'], data['order'])
         return (None, None)
 
 
     def _writeTreeData(self, tree, order):
         if self._treeFile is not None:
-            with open(self._treeFile, 'wb') as fp:
-                pickle.dump((tree, order, _VERSION), fp)
+            with open(self._treeFile, 'w') as fp:
+                json.dump({'contents':tree, 'order':order}, fp, indent='\t', default=self._serializeHandler)
 
 
 
