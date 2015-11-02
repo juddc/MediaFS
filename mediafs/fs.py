@@ -451,8 +451,9 @@ class Directory(FSObject):
         """
         inst = super(Directory, cls).deserialize(attrs)
         inst._order = None
-        for key in inst._contents.keys():
-            inst._contents[key].parent = inst
+        if inst._contents is not None:
+            for key in inst._contents.keys():
+                inst._contents[key].parent = inst
         return inst
 
 
