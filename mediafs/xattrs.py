@@ -2,7 +2,7 @@ import json
 from json.decoder import JSONDecodeError
 
 try:
-    import xattr2
+    import xattr
 except ImportError:
     print("===")
     print("pyxattr library not found (https://pypi.python.org/pypi/pyxattr)")
