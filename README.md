@@ -1,7 +1,7 @@
-MediaFS - A Python File/Directory API with Metadata
-===
+MediaFS - A Python File/Directory Library with Metadata
+=======================================================
 
-MediaFS is a Python API that makes it easy to search a directory tree. It has
+MediaFS is a Python library that makes it easy to search a directory tree. It has
 support for custom metadata as well as caching for faster searching.
 
 The primary design goal for MediaFS is to be a backend for managing media

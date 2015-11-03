@@ -1,5 +1,8 @@
 """
 MetaFS: A pure-Python filesystem caching system for easy searching and metadata storage
+
+Author: Judd Cohen
+License: MIT (See accompanying file LICENSE or copy at http://opensource.org/licenses/MIT)
 """
 import os
 import re
