@@ -6,3 +6,5 @@ Icon?
 
 # sphinx build dir
 _build
+_static
+_templates
