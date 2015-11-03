@@ -171,9 +171,11 @@ class SyncedRootDirectory(SyncedCachedRootDir):
 
 
     def _inotifyRegister(self, dirobj):
-        # because the butter library does not do any sort of recursive watching,
-        # this callback, which is called in the constructor of every directory
-        # object, will set up a watch for that directory.
+        """
+        Because the butter library does not do any sort of recursive watching,
+        this callback, which is called in the constructor of every directory
+        object, will set up a watch for that directory.
+        """
         handle = self._inotify.watch(dirobj.abspath, DIR_FLAGS)
 
         # allow lookups by either handle or relative path
@@ -182,8 +184,10 @@ class SyncedRootDirectory(SyncedCachedRootDir):
 
 
     def _getInotifyEventDir(self, evt):
-        # takes an inotify event (the butter library object) and returns the inotify
-        # handle for it.
+        """
+        Takes an inotify event (the butter library object) and returns the inotify
+        handle for it.
+        """
         return self._inotifyHandles[evt.wd]
 
 

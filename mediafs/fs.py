@@ -645,26 +645,26 @@ class Directory(FSObject):
 
         ``recursive``, ``dirs``, and ``files`` arguments are passed to ``Directory.all()``.
 
-        Examples:
+        *Examples*:
 
-        | All files that are named "file1.txt" or "file2.txt", recursively:
-        | ``directory.query(lambda f: f.name in ("file1.txt", "file2.txt"), recursive=True)``
+        All files that are named "file1.txt" or "file2.txt", recursively:
+            >>> directory.query(lambda f: f.name in ("file1.txt", "file2.txt"), recursive=True)
 
-        | All files larger than 1024 bytes:
-        | ``directory.query(lambda f: f.size > 1024, dirs=False)``
+        All files larger than 1024 bytes:
+            >>> directory.query(lambda f: f.size > 1024, dirs=False)
 
-        | All files and directories that start with E:
-        | ``directory.query(lambda f: f.name.startswith("E"))``
+        All files and directories that start with E:
+            >>> directory.query(lambda f: f.name.startswith("E"))
 
-        | All files modified within the last 7 days:
-        | ``from datetime import datetime, timedelta``
-        | ``directory.query(lambda f: f.mtime > (datetime.now() - timedelta(days=7)), dirs=False)``
+        All files modified within the last 7 days:
+            >>> from datetime import datetime, timedelta
+            >>> directory.query(lambda f: f.mtime > (datetime.now() - timedelta(days=7)), dirs=False)
 
-        | All directories with more than 10 items:
-        | ``directory.query(lambda d: len(d) > 10, recursive=True, files=False)``
+        All directories with more than 10 items:
+            >>> directory.query(lambda d: len(d) > 10, recursive=True, files=False)
 
-        | All directories that contain a file called "asdf.txt":
-        | ``directory.query(lambda d: "asdf.txt" in d, recursive=True, files=False)``
+        All directories that contain a file called "asdf.txt":
+            >>> directory.query(lambda d: "asdf.txt" in d, recursive=True, files=False)
         """
         for item in self.all(recursive=recursive, dirs=dirs, files=files):
             if query(item):
@@ -768,6 +768,9 @@ class Directory(FSObject):
 
 
     def __contains__(self, key):
+        """
+        Checks if a given file or directory name is contained in this directory
+        """
         return (key in self.contents)
 
 

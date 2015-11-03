@@ -30,11 +30,18 @@ class XAttrMetadata(object):
 
     For example:
 
-    | >>> fs['asdf2.txt'].metadata['author'] = "John Smith"
+    >>> fs['asdf2.txt'].metadata['author'] = "John Smith"
+    >>> fs['asdf2.txt'].metadata['year'] = 2007
 
-    | $ getfattr -n user.author asdf2.txt
-    | # file: asdf2.txt
-    | user.author="\"John Smith\""
+    ::
+
+        $ getfattr -n user.author asdf2.txt
+        # file: asdf2.txt
+        user.author="\"John Smith\""
+        
+        $ getfattr -n user.year asdf2.txt
+        # file: asdf2.txt
+        user.year="2007"
     """
 
     def __init__(self, path):
@@ -162,7 +169,7 @@ class XAttrRootDirectory(CachedRootDirectory):
     to other applications without needing to call ``save()`` first.
 
     The primary disadvantage is portability. Many system tools such as ``cp`` and ``rsync``
-    will ignore extended attributes and you can lose data this way. It can also be tricky
+    will ignore extended attributes and you can lose metadata this way. It can also be tricky
     to get your data out if you move it to another system.
 
     If you have issues using this class, try using the command line tools ``attr``,
@@ -181,7 +188,8 @@ class XAttrRootDirectory(CachedRootDirectory):
 
     def _getMetadataForObject(self, obj):
         """
-        Return a wrapper around the ``xattr`` module for metadata access
+        Return a XAttrMetadata object, which is a dict-like object which wraps the
+        ``xattr`` python module for metadata access.
         """
         return XAttrMetadata(obj.abspath)
 
