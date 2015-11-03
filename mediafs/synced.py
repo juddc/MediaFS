@@ -3,6 +3,7 @@ import functools
 import signal
 import logging
 import asyncio
+from collections import namedtuple
 
 from mediafs import (RootDirectory, CachedRootDirectory, Directory, mkRootDirectoryBaseClass)
 
@@ -12,6 +13,7 @@ except ImportError:
     print("===")
     print("Butter library not found (Linux-only, https://pypi.python.org/pypi/butter/0.11.1)")
     print("===")
+    raise
 
 from butter.asyncio.inotify import Inotify_async
 from butter.inotify import (event_name, IN_ACCESS, IN_MODIFY, IN_ATTRIB,
@@ -25,6 +27,12 @@ EVENT_NAMES = { k:v for k,v in event_name.items() if isinstance(k, str) and k !=
 DIR_FLAGS = 0
 for evt in DIR_EVENTS:
     DIR_FLAGS |= evt
+
+
+# FileEvent named tuple - the return value of the processFilesystemEvents coroutine is a list of these.
+# The "type" field will be one of the following values:
+#      "create", "modify", "delete", "movefrom", "moveto"
+FileEvent = namedtuple("FileEvent", ["type", "parent", "name"])
 
 
 def _flagsToStr(evt):
@@ -137,6 +145,9 @@ class SyncedRootDirectory(SyncedCachedRootDir):
         Because this is an exhaustive search that does not modify any data
         structures, this method is very slow compared to just calling
         ``refresh(recursive=True)``.
+
+        This is primarily intended as a way to validate that the inotify events
+        are being processed correctly.
         """
         allFiles = set()
         for item in self.all(recursive=True):
@@ -158,21 +169,50 @@ class SyncedRootDirectory(SyncedCachedRootDir):
 
 
     def _inotifyRegister(self, dirobj):
+        # because the butter library does not do any sort of recursive watching,
+        # this callback, which is called in the constructor of every directory
+        # object, will set up a watch for that directory.
         handle = self._inotify.watch(dirobj.abspath, DIR_FLAGS)
+
+        # allow lookups by either handle or relative path
         self._inotifyHandles[handle] = dirobj
         self._inotifyHandles[dirobj.relpath] = handle
 
 
     def _getInotifyEventDir(self, evt):
+        # takes an inotify event (the butter library object) and returns the inotify
+        # handle for it.
         return self._inotifyHandles[evt.wd]
 
 
     def _getDirectoryClass(self):
+        # use the directory class that can handle inotify events
         return SyncedDirectory
 
 
     @asyncio.coroutine
-    def handleInotifyEvents(self):
+    def processFilesystemEvents(self):
+        """
+        Tries to get new events from the filesystem. If any events exist, more events will be
+        retrieved with a timeout of 0.05 seconds until the timeout expires, at which time
+        all of the retrieved events will be processed.
+
+        Each event will be processed so that this object stays in sync with the filesystem.
+
+        A list of all processed events will be returned in a list of ``FileEvent`` objects,
+        which is a namedtuple containing 3 fields: ``type``, ``parent``, ``name``.
+
+        | ``type`` is a string which will contain one of the following values: "create",
+        | "modify", "delete", "movefrom", "moveto"
+        | 
+        | ``parent`` is a directory object that is the parent directory of the file or
+        | directory that the event refers to.
+        |
+        | ``name`` is the name of the file or directory that the event refers to.
+
+        Note that in the returned list of events, any time a "movefrom" event occurs, a
+        "moveto" event is guaranteed to come after it.
+        """
         if self._futureInotifyEvent is None:
             self._futureInotifyEvent = asyncio.ensure_future(self._inotify.get_event())
 
@@ -182,7 +222,7 @@ class SyncedRootDirectory(SyncedCachedRootDir):
                 result = self._futureInotifyEvent.result()
                 results.append(result)
             except asyncio.CancelledError:
-                pass
+                return []
 
             # see if more events will follow this one
             moreEvents = True
@@ -195,37 +235,48 @@ class SyncedRootDirectory(SyncedCachedRootDir):
 
             self._futureInotifyEvent = None
 
+        # for every event, we're going to add a 3-tuple to this array representing the event
         returnValues = []
 
+        # go through all the results and route them to helper methods on the Directory objects
         for i in range(len(results)):
             dirobj = None
 
             evt = results[i]
 
+            # nextEvt is the event object following this one. we need this because
+            # movefrom and moveto are different events and we need them as a pair
             if i < len(results) - 1:
                 nextEvt = results[i + 1]
             else:
                 nextEvt = None
 
+            # is this a directory event?
             isDir = False
             if evt.is_dir_event:
                 isDir = True
 
+            # get the directory object we're going to route the event to
             dirobj = self._getInotifyEventDir(evt)
 
+            # a file or directory was created
             if evt.create_event:
                 dirobj._inotifyCreate(evt, isDir)
-                returnValues.append(("create", dirobj, evt.filename.decode()))
+                returnValues.append(FileEvent("create", dirobj, evt.filename.decode()))
 
+            # a file or directory was modified
             elif evt.modify_event:
                 dirobj._inotifyModify(evt, isDir)
-                returnValues.append(("modify", dirobj, evt.filename.decode()))
+                returnValues.append(FileEvent("modify", dirobj, evt.filename.decode()))
 
+            # a file or directory was deleted
             elif evt.delete_event:
                 dirobj._inotifyDelete(evt, isDir)
-                returnValues.append(("delete", dirobj, evt.filename.decode()))
+                returnValues.append(FileEvent("delete", dirobj, evt.filename.decode()))
 
+            # a file or directory was moved
             elif nextEvt is not None and (evt.moved_from_event or evt.moved_to_event):
+                # we need to figure out the order. one event is movefrom and one event is moveto.
                 evtFrom = None
                 evtTo = None
 
@@ -239,15 +290,20 @@ class SyncedRootDirectory(SyncedCachedRootDir):
                 elif nextEvt.moved_to_event:
                     evtTo = nextEvt
 
-                if evtFrom is None or evtTo is None:
+                # make sure we actually get a movefrom/moveto pair
+                if evtFrom is not None and evtTo is not None:
+                    nextDirobj = self._getInotifyEventDir(nextEvt)
+                    dirobj._inotifyMove(evt, nextEvt, nextDirobj, isDir)
+                    # in our return values, movefrom and moveto will ALWAYS be a pair, and
+                    # movefrom will ALWAYS come before moveto.
+                    returnValues.append(FileEvent("movefrom", dirobj, evtFrom.filename.decode()))
+                    returnValues.append(FileEvent("moveto", nextDirobj, evtTo.filename.decode()))
+
+                # didn't get a pair, log an error
+                else:
                     filename = os.path.join(dirobj.abspath, evt.filename.decode())
                     logging.error("Expected a MOVED_FROM and MOVED_TO pair, got %s and %s for file '%s'" % (
                         _flagsToStr(evt), _flagsToStr(nextEvt), filename))
-                else:
-                    nextDirobj = self._getInotifyEventDir(nextEvt)
-                    dirobj._inotifyMove(evt, nextEvt, nextDirobj, isDir)
-                    returnValues.append(("movefrom", dirobj, evtFrom.filename.decode()))
-                    returnValues.append(("moveto", nextDirobj, evtTo.filename.decode()))
 
         return returnValues
 
@@ -264,7 +320,7 @@ if __name__ == "__main__":
     @asyncio.coroutine
     def mainloop():
         while True:
-            filesystemEvents = yield from fs.handleInotifyEvents()
+            filesystemEvents = yield from fs.processFilesystemEvents()
             for evtType, evtObj, filename in filesystemEvents:
                 print(evtType, evtObj, filename)
             yield from asyncio.sleep(1)

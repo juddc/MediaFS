@@ -1,7 +1,13 @@
 import json
 from json.decoder import JSONDecodeError
 
-import xattr
+try:
+    import xattr2
+except ImportError:
+    print("===")
+    print("pyxattr library not found (https://pypi.python.org/pypi/pyxattr)")
+    print("===")
+    raise
 
 from mediafs.fs import File, Directory, CachedRootDirectory
 
@@ -142,7 +148,7 @@ class XAttrMetadata(object):
 class XAttrRootDirectory(CachedRootDirectory):
     """
     A RootDirectory object that stores file and directory metadata as extended filesystem
-    attributes on Linux and Mac systems. Depends on the ``xattrs`` Python module.
+    attributes on Linux systems. Depends on the ``pyxattrs`` Python module.
 
     This class is derived from ``CachedRootDirectory``, so you will still need to call
     ``save()`` to write the directory tree cache. If you do not need this functionality
