@@ -28,5 +28,5 @@ setup(name='mediafs',
       install_requires=[],
       package_data={'': ['LICENSE', 'README.md']},
       extras_require=extras,
-      scripts=['metasearch.py'])
+      scripts=['mediasearch.py'])
 
