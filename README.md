@@ -8,8 +8,12 @@ The primary design goal for MediaFS is to be a backend for managing media
 collections, such as for music or video, but the implementation is
 filetype-agnostic and can be used for working with any type of data.
 
+Documentation
+-------------
+[Read The Docs](https://mediafs.readthedocs.org)
 
-Examples:
+Simple Examples
+---------------
 ```
 from mediafs import CachedRootDirectory
 
