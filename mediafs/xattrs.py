@@ -144,15 +144,20 @@ class XAttrRootDirectory(CachedRootDirectory):
     A RootDirectory object that stores file and directory metadata as extended filesystem
     attributes on Linux and Mac systems. Depends on the ``xattrs`` Python module.
 
-    This class is derived from CachedRootDirectory, so you will still need to call ``save()``
-    to get tree caching functionality. If you do not need this functionality at all,
-    pass ``treeFile=None`` as an argument to the constructor.
+    This class is derived from ``CachedRootDirectory``, so you will still need to call
+    ``save()`` to write the directory tree cache. If you do not need this functionality
+    at all, pass ``treeFile=None`` as an argument to the constructor.
 
-    This can situationally be faster than using a single JSON file to store all metadata
-    because it doesn't have the overhead of hashing (even partially) files before doing the
-    metadata lookup. It also has the advantage of working on the filesystem attributes
-    directly - calling ``file.metadata['asdf'] = 5`` immediately serializes the value,
-    which is then available to other applications without needing to call ``save()`` first.
+    Using extended filesystem attributes for metadata can situationally be faster than
+    using a single JSON file to store all metadata because it doesn't have the overhead
+    of hashing (even partially) files before doing the metadata lookup. It also has the
+    advantage of working on the filesystem attributes directly - calling
+    ``file.metadata['asdf'] = 5`` immediately serializes the value, which is then available
+    to other applications without needing to call ``save()`` first.
+
+    The primary disadvantage is portability. Many system tools such as ``cp`` and ``rsync``
+    will ignore extended attributes and you can lose data this way. It can also be tricky
+    to get your data out if you move it to another system.
 
     If you have issues using this class, try using the command line tools ``attr``,
     ``getfattr``, and ``setfattr``. Please note that this class uses the "user" namespace,
