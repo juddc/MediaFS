@@ -86,9 +86,8 @@ class FSObject(object):
     @classmethod
     def deserialize(cls, attrs):
         """
-        Takes a dict object and a parent object, and returns a new instance of
-        this object with all attributes initialized to the values contained in
-        the dict.
+        Takes a dict object and returns a new instance of this class with all attributes
+        initialized to the values contained in the dict.
         """
         inst = cls.__new__(cls)
         for attr, val in attrs.items():
@@ -445,9 +444,8 @@ class Directory(FSObject):
     @classmethod
     def deserialize(cls, attrs):
         """
-        Takes a dict object and a parent object, and returns a new instance of
-        this object with all attributes initialized to the values contained in
-        the dict.
+        Takes a dict object, and returns a new instance of this class with all attributes
+        initialized to the values contained in the dict.
         """
         inst = super(Directory, cls).deserialize(attrs)
         inst._order = None
@@ -460,7 +458,8 @@ class Directory(FSObject):
     @property
     def size(self):
         """
-        For directories, recursively calculate the size of the contents of the directory
+        For directories, recursively calculate the size of the contents of the directory.
+        This value is lazily evaluated and cached.
         """
         if self._size is None:
             total = 0
@@ -472,16 +471,33 @@ class Directory(FSObject):
 
     @property
     def contents(self):
+        """
+        The dict representing the contents of this directory. If this directory has not
+        been refreshed yet, accessing this property will trigger a ``refresh(recursive=False)``
+        before returning the dict.
+
+        If you have code accessing a single specific file or directory object in an inner
+        loop, a small optimization could be calling ``directory.contents[filename]``
+        instead of ``directory[filename]``, due to the number of overloads in
+        ``Directory.__getitem__``.
+        """
         if self._contents is None:
-            self.refresh()
+            self.refresh(recursive=False)
         return self._contents
 
 
     @property
     def order(self):
+        """
+        A list representing the order of the items in this directory. Lazily evaluated
+        and cached.
+
+        Accessing this property will trigger ``refresh(recursive=False)`` if a refresh
+        has never been run on this directory.
+        """
         if self._order is None:
             if self._contents is None:
-                self.refresh()
+                self.refresh(recursive=False)
             else:
                 self._order = self.root._orderDirectory(self._contents)
         return self._order
@@ -532,10 +548,6 @@ class Directory(FSObject):
         # clear the directory size cache so that it will be recalculated next time it's requested
         self._size = None
 
-        # figure out what file and directory classes we're going to use when indexing
-        DirClass = self.root._getDirectoryClass()
-        FileClass = self.root._getFileClass()
-
         for filename, isdir, isfile in files:
             fullPath = os.path.join(self.path, filename)
 
@@ -554,6 +566,7 @@ class Directory(FSObject):
 
             # create a new directory object
             if isdir:
+                DirClass = self.root._getDirectoryClass(fullPath)
                 item = DirClass(fullPath, parent=self)
                 self._contents[filename] = item
 
@@ -565,6 +578,7 @@ class Directory(FSObject):
 
             # create a new file object
             elif isfile:
+                FileClass = self.root._getFileClass(fullPath)
                 item = FileClass(fullPath, parent=self)
                 self._contents[filename] = item
 
@@ -831,6 +845,11 @@ class RootDirectory(Directory):
     """
     The filesystem root directory
     """
+
+    # what classes to use for file and directory objects?
+    FileClass = File
+    DirectoryClass = Directory
+
     def __init__(self, path):
         Directory.__init__(self, path, None)
 
@@ -869,41 +888,59 @@ class RootDirectory(Directory):
         self._writeTreeData(self._contents, self._order)
 
 
-    def scrubMetadata(self):
+    def scrubMetadata(self, autoRefresh=True):
         """
         Removes metadata entries for files that no longer exist. Takes a while to run
         and deletes data, so it must be run manually.
+
+        This method would be less useful if run using an out-of-date directory tree,
+        so it will automatically call ``self.refresh(recursive=True)``. If you don't
+        want this to happen for whatever reason (maybe you *just* ran a refresh and
+        don't need a second one) then pass the argument ``autoRefresh=False`` to this
+        method.
         """
-        self.refresh(recursive=True)
+        if autoRefresh:
+            # we need to make sure we have the most current data first
+            self.refresh(recursive=True)
 
+        # built a set of all currently existing file and directory hashes
         hashes = set()
-        outdatedHashes = []
-
         for f in self.all(recursive=True):
             hashes.add(f.hash())
 
+        # build a list of all hashes currently in self._md that are NOT in the
+        # current set of hashes
+        outdatedHashes = []
         for h in self._md.keys():
             if h not in hashes:
                 outdatedHashes.append(h)
 
+        # delete every entry in self._md that is outdated
         for h in outdatedHashes:
             del self._md[h]
 
 
-    def _getFileClass(self):
+    def _getFileClass(self, path):
         """
-        Returns a Python class that will be used for File objects in the filesystem
-        tree. Used to allow subclasses of the File object.
+        Returns a Python class that will be used for File objects in the filesystem tree.
+
+        If you want to set a new File class for all files, you can just set the FileClass
+        attribute to your class. If you want to use multiple classes, you can override
+        this method and place any logic for determining which class to use here.
         """
-        return File
+        return self.FileClass
 
 
-    def _getDirectoryClass(self):
+    def _getDirectoryClass(self, path):
         """
-        Returns a Python class that will be used for Directory objects in the filesystem
-        tree. Used to allow subclasses of the Directory object.
+        Returns a Python class that will be used for Directory objects in the filesystem tree.
+
+        If you want to set a new Directory class for all directories, you can just set
+        the ``DirectoryClass`` attribute to your class. If you want to use multiple
+        classes, you can override this method and place any logic for determining which
+        class to use here.
         """
-        return Directory
+        return self.DirectoryClass
 
 
     def _orderDirectory(self, contents):
@@ -927,40 +964,52 @@ class RootDirectory(Directory):
 
     def _directoryRefresh(self, item):
         """
-        Callback whenever a directory is refreshed.
+        Called whenever a directory is refreshed.
 
-        Override this in subclasses if you would like some code to be run whenever
-        any directory is refreshed.
+        Override this in a subclass if you would like some code to be run whenever a
+        directory is refreshed.
         """
 
 
     def _fileRefresh(self, item):
         """
-        Callback whenever a directory is refreshed.
+        Called whenever a file is refreshed.
 
-        Override this in subclasses if you would like some code to be run (for example,
+        Override this in a subclass if you would like some code to be run (for example,
         scanning the file to manipulate metadata) whenever any file is scanned.
         """
 
 
     def _pathDelete(self, item):
         """
-        Callback whenever a file or directory is about to be deleted. This happens
+        Called whenever a file or directory is about to be deleted. This happens
         when a refresh is triggered and a file or directory no longer exists.
 
-        Override this in subclasses if you would like some code to run before the
+        Override this in a subclass if you would like some code to run before the
         file or directory object reference is removed.
+
+        *Note*: If a directory is refreshed with ``directory.refresh()``, its contents
+        will be wiped and recreated, so this method will never be called. If ``refresh()``
+        is called with arguments, eg. ``directory.refresh("asdf.txt", "asdf2.txt")``, only
+        specific files are refreshed, and this method will be called if and when one of
+        those files no longer exists.
         """
 
 
     def _readMetadata(self):
         """
-        Returns metadata for all files in the filesystem.
+        Retrieves and returns metadata for all files in the filesystem.
 
-        The returned object should be a dict, with keys being the output of FSObject.hash(),
-        and values being a dict containing the metadata associated with that hash.
+        The returned object should be a dict, with the keys being a unique identifier for
+        files, and values being a dict or dict-like object containing the metadata
+        associated with that key.
 
-        Should be implemented in a subclass to allow storing metadata in a file or database.
+        By default, keys should be the output of ``FSObject.hash()``, but this can be
+        changed by adding a custom implementation of ``RootDirectory._getMetadataForObject()``.
+
+        The constructor will run ``self._md = self._readMetadata()``.
+
+        Should be implemented in a subclass to allow reading in metadata from a file or database.
         """
         return {}
 
@@ -986,6 +1035,8 @@ class RootDirectory(Directory):
         Should return a 2-tuple, with the first element being a dict (keys are filenames,
         values are of type ``FSObject``), and the second element being a list containing
         all keys in that dict which represents the ordering of those keys.
+
+        The constructor will run ``self._contents, self._order = self._readTreeData()``.
         """
         return (None, None)
 
@@ -1005,13 +1056,18 @@ class RootDirectory(Directory):
 
     def _getMetadataForObject(self, obj):
         """
-        Given a FSObject, return a dict representing the metadata for that file.
+        Given a FSObject, return a dict or dict-like object representing the metadata
+        for that file or directory.
 
-        This method exists so that subclasses can override default behavior.
+        This method exists so that subclasses can override the default behavior.
         """
+        # get the hash of the object and use it as a dict key for the metadata dict
         fshash = obj.hash()
+
+        # no entry for this hash? make one first
         if fshash not in self._md:
             self._md[fshash] = {}
+
         return self._md[fshash]
 
 
@@ -1054,6 +1110,10 @@ class CachedRootDirectory(RootDirectory):
 
 
     def _ignorePath(self, name, fullpath, isdir):
+        """
+        A default implementation for ``_ignorePath`` that simply ignores the json files
+        for metadata and the tree cache.
+        """
         # Ignore the metadata and tree cache data when indexing
         if name == self._mdFile or name == self._treeFile:
             return True
@@ -1062,6 +1122,9 @@ class CachedRootDirectory(RootDirectory):
 
 
     def _readMetadata(self):
+        """
+        Reads in metadata from a JSON file
+        """
         if self._mdFile is not None and os.path.exists(self._mdFile):
             with open(self._mdFile, 'r') as fp:
                 return json.load(fp)
@@ -1069,27 +1132,43 @@ class CachedRootDirectory(RootDirectory):
 
 
     def _writeMetadata(self, metadata):
+        """
+        Writes out all metadata to a JSON file
+        """
         if self._mdFile is not None:
             with open(self._mdFile, 'w') as fp:
                 json.dump(metadata, fp, indent=4)
 
 
     def _deserializeHandler(self, data):
+        """
+        When decoding the directory tree JSON file, this method is used for the
+        ``object_hook`` argument of ``json.load()`` so that dicts can be
+        transformed back into FSObjects.
+        """
         if '__fsobject' in data:
             if data['__fsobject'] == 'File':
-                return self._getFileClass().deserialize(data)
+                return self._getFileClass(data['name']).deserialize(data)
             elif data['__fsobject'] == 'Directory':
-                return self._getDirectoryClass().deserialize(data)
+                return self._getDirectoryClass(data['name']).deserialize(data)
         return data
 
 
     def _serializeHandler(self, obj):
-        if isinstance(obj, (self._getFileClass(), self._getDirectoryClass())):
+        """
+        When encoding the directory tree as JSON, this method is used for the
+        ``default`` argument of ``json.dump()`` so that FSObjects can be transformed
+        into dicts.
+        """
+        if isinstance(obj, (self._getFileClass(obj.name), self._getDirectoryClass(obj.name))):
             return obj.serialize()
         raise TypeError(str(type(obj)))
 
 
     def _readTreeData(self):
+        """
+        Reads the directory cache tree in from a JSON file
+        """
         if self._treeFile is not None and os.path.exists(self._treeFile):
             with open(self._treeFile, 'r') as fp:
                 data = json.load(fp, object_hook=self._deserializeHandler)
@@ -1098,47 +1177,45 @@ class CachedRootDirectory(RootDirectory):
 
 
     def _writeTreeData(self, tree, order):
+        """
+        Writes the directory tree cache out to a JSON file
+        """
         if self._treeFile is not None:
             with open(self._treeFile, 'w') as fp:
                 json.dump({'contents':tree, 'order':order}, fp, indent='\t', default=self._serializeHandler)
 
 
 
-def mkRootDirectoryBaseClass(FileClass=File, DirectoryClass=Directory, RootDirectoryClass=RootDirectory):
+def mkRootDirectoryBaseClass(FileCls=File, DirectoryCls=Directory, RootDirectoryCls=RootDirectory):
     """
     Helper factory function that can generate a RootDirectory class
     with a different base class. Useful if you have a custom Directory
     class with features you also want to work with the root directory.
 
-    ``FileClass``: a class that all file objects will derive from.
-    ``DirectoryClass``: a class that all directories, including the root
+    ``FileCls``: a class that all file objects will derive from.
+    ``DirectoryCls``: a class that all directories, including the root
         directory, will be derived from.
-    ``RootDirectoryClass``: a class to copy existing methods from. This
+    ``RootDirectoryCls``: a class to copy existing methods from. This
         allows your custom base class to "inherit" methods from existing
         root directories, such as CachedRootDirectory.
     """
     # generate the new class
-    class RootDir(DirectoryClass):
-        # may as well auto-fill the _getFileClass and _getDirectoryClass methods
-        def _getFileClass(self):
-            return FileClass
-        def _getDirectoryClass(self):
-            return DirectoryClass
+    class RootDir(DirectoryCls):
+        FileClass = FileCls
+        DirectoryClass = DirectoryCls
 
     # apply all of the root directory attributes to this new root directory class
     for name, obj in RootDirectory.__dict__.items():
-        if name not in ("_getFileClass", "_getDirectoryClass"):
-            setattr(RootDir, name, obj)
+        setattr(RootDir, name, obj)
 
     # if the specified root directory class isn't the default, also apply any extra
     # stuff from the specified one as well.
-    if RootDirectoryClass != RootDirectory:
-        if not RootDirectoryClass.__base__ == RootDirectory:
-            raise Exception("The RootDirectoryClass argument must inherit directly from RootDirectory.")
+    if RootDirectoryCls != RootDirectory:
+        if not RootDirectoryCls.__base__ == RootDirectory:
+            raise Exception("The RootDirectoryCls argument must inherit directly from RootDirectory.")
 
-        for name, obj in RootDirectoryClass.__dict__.items():
-            if name not in ("_getFileClass", "_getDirectoryClass"):
-                setattr(RootDir, name, obj)
+        for name, obj in RootDirectoryCls.__dict__.items():
+            setattr(RootDir, name, obj)
 
     return RootDir
 

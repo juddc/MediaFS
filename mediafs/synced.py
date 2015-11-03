@@ -119,14 +119,16 @@ class SyncedDirectory(Directory):
 
 # make a CachedRootDirectory class that has SyncedDirectory as a subclass
 SyncedCachedRootDir = mkRootDirectoryBaseClass(
-    DirectoryClass=SyncedDirectory,
-    RootDirectoryClass=CachedRootDirectory)
+    DirectoryCls=SyncedDirectory,
+    RootDirectoryCls=CachedRootDirectory)
 
 
 class SyncedRootDirectory(SyncedCachedRootDir):
     """
     A root directory object that can keep itself in sync with the filesystem.
     """
+    DirectoryClass = SyncedDirectory
+
 
     def __init__(self, path, loop):
         super().__init__(path)
@@ -183,11 +185,6 @@ class SyncedRootDirectory(SyncedCachedRootDir):
         # takes an inotify event (the butter library object) and returns the inotify
         # handle for it.
         return self._inotifyHandles[evt.wd]
-
-
-    def _getDirectoryClass(self):
-        # use the directory class that can handle inotify events
-        return SyncedDirectory
 
 
     @asyncio.coroutine
