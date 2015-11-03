@@ -1,2 +1,8 @@
 *.pyc
 __pycache__
+.DS_Store?
+Thumbs.db
+Icon?
+
+# sphinx build dir
+_build
