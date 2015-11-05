@@ -39,3 +39,13 @@ for item in fs.query(lambda f: f.size > 2**30, files=False):
 
 ```
 
+Scandir vs Listdir
+------------------
+If you are using Python 3.4 or lower, you will want to install the
+[scandir package](https://pypi.python.org/pypi/scandir). If you choose
+not to install this, MediaFS will fall back on using `os.listdir()` instead.
+Python 3.5+ includes `scandir()` in the standard library.
+
+`scandir()` is about twice as fast as `os.listdir()` due to making half as many
+system calls, so using this package will nearly double the speed of
+filesystem indexing, which is *very* noticible on large directory trees.
