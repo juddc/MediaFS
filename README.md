@@ -14,7 +14,8 @@ Documentation
 
 Simple Examples
 ---------------
-```
+```python
+
 from mediafs import CachedRootDirectory
 
 fs = CachedRootDirectory("/some/directory")
