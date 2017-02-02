@@ -9,7 +9,7 @@ or script using MediaFS.
 
 For example, if you stored ID3 tag information from some MP3 files as metadata for
 a directory, you could use this script to search by metadata:
-    $ metasearch.py --query="f.get('author') == 'The Beatles'"
+    $ mediasearch.py --query="f.get('author') == 'The Beatles'"
 """
 import os
 import sys
