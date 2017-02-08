@@ -1,5 +1,5 @@
 """
-MetaFS: A pure-Python filesystem caching system for easy searching and metadata storage
+MediaFS: A pure-Python filesystem caching system for easy searching and metadata storage
 
 Author: Judd Cohen
 License: MIT (See accompanying file LICENSE or copy at http://opensource.org/licenses/MIT)
@@ -44,7 +44,7 @@ class XAttrMetadata(object):
         $ getfattr -n user.author asdf2.txt
         # file: asdf2.txt
         user.author="\"John Smith\""
-        
+
         $ getfattr -n user.year asdf2.txt
         # file: asdf2.txt
         user.year="2007"

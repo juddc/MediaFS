@@ -1,5 +1,5 @@
 """
-MetaFS: A pure-Python filesystem caching system for easy searching and metadata storage
+MediaFS: A pure-Python filesystem caching system for easy searching and metadata storage
 
 Author: Judd Cohen
 License: MIT (See accompanying file LICENSE or copy at http://opensource.org/licenses/MIT)
@@ -150,7 +150,7 @@ class FSObject(object):
         *Example*:
 
             ``directory.query(lambda f: 'author' in f.metadata and f.metadata['author'] == "The Clash")``
-            
+
             can be shortened to:
 
             ``directory.query(lambda f: f.get('author') == "The Clash")``
@@ -791,7 +791,7 @@ class Directory(FSObject):
 
             ``directory[...]``
                 (same as ``list(directory.all(recursive=True))``)
-        
+
         * An integer, which is treated as an index and returns one item based on the
           directory ordering. Because the ordering is precalculated, this is O(1).
           Returns exactly one item.

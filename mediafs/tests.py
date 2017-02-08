@@ -1,5 +1,5 @@
 """
-MetaFS: A pure-Python filesystem caching system for easy searching and metadata storage
+MediaFS: A pure-Python filesystem caching system for easy searching and metadata storage
 
 Author: Judd Cohen
 License: MIT (See accompanying file LICENSE or copy at http://opensource.org/licenses/MIT)
@@ -56,7 +56,7 @@ class TestMetaFS(unittest.TestCase):
         Test that we get the number of files we expect to in various directories
         """
         fs = self._getFS()
-        
+
         self.assertEqual(len(fs), 7) # 7 items in the toplevel dir
 
         # syntax for getting all top-level files
@@ -241,7 +241,7 @@ class TestMetaFS(unittest.TestCase):
         # try root again after save and reload
         fs.save()
         fs = self._getFS(clean=False)
-        
+
         item = fs['def']['azerty']['j1.txt']
 
         self.assertEqual(item._root, None)

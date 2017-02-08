@@ -1,5 +1,5 @@
 """
-MetaFS: A pure-Python filesystem caching system for easy searching and metadata storage
+MediaFS: A pure-Python filesystem caching system for easy searching and metadata storage
 
 Author: Judd Cohen
 License: MIT (See accompanying file LICENSE or copy at http://opensource.org/licenses/MIT)
@@ -121,7 +121,7 @@ class SyncedDirectory(Directory):
         """
         filename = evt.filename.decode()
         self.refresh(filename)
-            
+
 
 # make a CachedRootDirectory class that has SyncedDirectory as a subclass
 SyncedCachedRootDir = mkRootDirectoryBaseClass(
@@ -211,7 +211,7 @@ class SyncedRootDirectory(SyncedCachedRootDir):
 
         | ``type`` is a string which will contain one of the following values: "create",
         | "modify", "delete", "movefrom", "moveto"
-        | 
+        |
         | ``parent`` is a directory object that is the parent directory of the file or
         | directory that the event refers to.
         |
