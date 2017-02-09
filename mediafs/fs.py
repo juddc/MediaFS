@@ -592,6 +592,139 @@ class Directory(FSObject):
         self._order = self.root._orderDirectory(self._contents)
 
 
+    def sync(self, recursive=False, onAdded=None, onDeleted=None, onModified=None, onRenamed=None):
+        """
+        Rescans the filesystem and adds new files to the index for this directory, as well as
+        removing files from the index if they no longer exist.
+
+        If ``recursive`` is set to ``True``, then ``sync()`` will also be called on all subdirectories.
+        """
+        # were any changes were made in this sync operation?
+        dirChanged = False
+
+        # get the current directory listing and store the data in a dict so we can reference it easily
+        currentContents = { name: (name, isdir, isfile) for name, isdir, isfile in dirlisting(self.path) }
+
+        # an index of all current files with their fasthash as the dict key
+        fasthashIndex = {}
+        for item in self._contents.values():
+            if not item.isdir and item._fasthash is not None:
+                fasthashIndex[item._fasthash] = item
+
+        # iterate over the current index contents (before adding new files/dirs)
+        for name, item in self._contents.items():
+            if item.isdir or item.name not in currentContents:
+                continue
+
+            # need to check if the fasthash value changed, so keep the old one
+            origFasthash = self._contents[name]._fasthash
+
+            # intentionally refresh the fasthash value on all files because we need them refreshed
+            # to scan for renamed files in the next step anyway
+            newFasthash = self._contents[name].fasthash(refresh=True)
+
+            # update the fasthashIndex
+            if origFasthash is not None:
+                del fasthashIndex[origFasthash]
+            fasthashIndex[newFasthash] = item
+
+            # check for modified files (already in the index but with a changed fasthash)
+            if origFasthash is None or origFasthash != newFasthash:
+                # this file changed and needs a refresh
+                dirChanged = True
+                self.root._fileRefresh(item)
+                if onModified is not None:
+                    onModified(item)
+
+        # scan for new files
+        for name, isdir, isfile in currentContents.values():
+            fullPath = os.path.join(self.path, name)
+
+            # should we skip this file?
+            if self.root._ignorePath(name, fullPath, isdir):
+                continue
+
+            # do we need to add this file to the index?
+            if name not in self._contents:
+                dirChanged = True
+
+                # create a new directory object
+                if isdir:
+                    DirClass = self.root._getDirectoryClass(fullPath)
+                    newDir = DirClass(fullPath, parent=self)
+                    self._push(newDir, reorder=False)
+
+                    if onAdded is not None:
+                        onAdded(newDir)
+
+                    # callback on directory scans
+                    self.root._directoryRefresh(newDir)
+
+                elif isfile:
+                    # create a new file object
+                    FileClass = self.root._getFileClass(fullPath)
+                    newFile = FileClass(fullPath)
+
+                    # first find out if this file is just renamed and not new
+                    newFileFasthash = newFile.fasthash(refresh=True)
+
+                    if newFileFasthash in fasthashIndex:
+                        # grab the old file object and delete it from the index
+                        origFile = fasthashIndex[newFileFasthash]
+                        origFilename = origFile.name
+                        self._pop(origFile)
+                        # rename the file object and push it back into the index
+                        origFile.name = name
+                        self._push(origFile, reorder=False)
+                        self.root._fileRefresh(origFile)
+
+                        if onRenamed is not None:
+                            onRenamed(origFilename, newFile)
+
+                    else:
+                        # this must be a new file, so just push it as-is into the index
+                        self._push(newFile, reorder=False)
+
+                        # callback on file scans
+                        self.root._fileRefresh(newFile)
+
+                        if onAdded is not None:
+                            onAdded(newFile)
+
+        # now we need to check if anything was removed
+        for name in [ name for name in self._contents.keys() if name not in currentContents ]:
+            dirChanged = True
+
+            if onDeleted is not None:
+                onDeleted(self._contents[name])
+
+            # callback on deletions
+            self.root._pathDelete(self._contents[name])
+
+            # remove the item from the index
+            self._pop(self._contents[name], reorder=False)
+
+        # now sync recursively if needed
+        if recursive:
+            for item in self._contents.values():
+                if item.isdir:
+                    subdirChanged = item.sync(recursive=recursive, onAdded=onAdded, onDeleted=onDeleted,
+                        onModified=onModified, onRenamed=onRenamed)
+                    if subdirChanged:
+                        dirChanged = True
+
+        # only need to recalculate size and order if something actually changed
+        if dirChanged:
+            # clear the directory size cache so that it will be recalculated next time it's requested
+            self._size = None
+
+            # recalculate ordering
+            self._order = self.root._orderDirectory(self._contents)
+
+        # return a bool indicating if anything was changed
+        return dirChanged
+
+
     def filter(self, pattern, recursive=False, dirs=True, files=True, ignoreCase=True):
         """
         Uses the Python stdlib ``fnmatch`` library to search the filesystem.
@@ -705,17 +838,19 @@ class Directory(FSObject):
                     yield subitem
 
 
-    def _push(self, item):
+    def _push(self, item, reorder=True):
         """
         Put a FSObject instance in this directory.
         Used for keeping directories in sync with filesystem changes.
+        If ``reorder`` is True, then the directory ordering will be recalculated.
         """
         if item.name in self.contents.keys():
             raise FileExistsError(item.name)
         self.contents[item.name] = item
 
         # reorder directory
-        self._order = self.root._orderDirectory(self.contents)
+        if reorder:
+            self._order = self.root._orderDirectory(self.contents)
 
         # set up file to be in this directory
         item.parent = self
@@ -725,14 +860,16 @@ class Directory(FSObject):
         item._abspath = None
 
 
-    def _pop(self, item):
+    def _pop(self, item, reorder=True):
         """
         Remove a FSObject instance from this directory.
         Used for keeping directories in sync with filesystem changes.
+        If ``reorder`` is True, then the directory ordering will be recalculated.
         """
         if self._contents is not None:
             del self._contents[item.name]
-            self._order = self.root._orderDirectory(self._contents)
+            if reorder:
+                self._order = self.root._orderDirectory(self._contents)
         return item
 
 
@@ -755,7 +892,8 @@ class Directory(FSObject):
                 f._path = None
                 f._abspath = None
                 f._relpath = None
-                newPath = f.path # force the path var to update
+                # force the path var to update
+                newPath = f.path
 
 
     def __len__(self):
